@@ -526,10 +526,13 @@ def main():
                                        aws_access_key_id=args.aws_key,
                                        aws_secret_access_key=args.aws_secret,
                                        security_token=args.aws_token)
-    else:
+    elif args.aws_key and args.aws_secret:
         s3 = boto.s3.connect_to_region(args.aws_region,
                                        aws_access_key_id=args.aws_key,
                                        aws_secret_access_key=args.aws_secret)
+    else:
+        s3 = boto.connect_s3()
+
     bucket = s3.get_bucket(args.bucket)
 
     handler = UploadHandler(threads=args.threads, key=args.aws_key,
