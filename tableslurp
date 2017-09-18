@@ -108,11 +108,14 @@ class DownloadHandler(object):
                                              aws_access_key_id=self.key,
                                              aws_secret_access_key=self.secret,
                                              security_token=self.token)
-        else:
+        elif self.key and self.secret:
             conn = boto.s3.connect_to_region(self.region,
                                              aws_access_key_id=self.key,
                                              aws_secret_access_key=self.secret,
                                              security_token=self.token)
+
+        else:
+            conn = boto.connect_s3(self.region)
 
         bucket = conn.get_bucket(self.bucket_name)
         log.debug('Connected to s3')
