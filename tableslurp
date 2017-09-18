@@ -115,7 +115,7 @@ class DownloadHandler(object):
                                              security_token=self.token)
 
         else:
-            conn = boto.connect_s3(self.region)
+            conn = boto.connect_s3()
 
         bucket = conn.get_bucket(self.bucket_name)
         log.debug('Connected to s3')

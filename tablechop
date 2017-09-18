@@ -31,10 +31,13 @@ def days_ago(tstamp):
 
 def get_bucket(args):
     try:
-        s3conn = boto.s3.connect_to_region(args.aws_region,
+        if args.key and args.secret:
+            s3conn = boto.s3.connect_to_region(args.aws_region,
                                            aws_access_key_id=args.key,
                                            aws_secret_access_key=args.secret,
                                            security_token=args.token)
+        else:
+            s3conn = boto.connect_s3()
         return s3conn.get_bucket(args.bucket)
     except boto.exception.BotoServerError, e:
         log.error('Problem initializing S3 connection: %s', e)

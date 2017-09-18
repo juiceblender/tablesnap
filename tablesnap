@@ -116,10 +116,13 @@ class UploadHandler(pyinotify.ProcessEvent):
                                            aws_access_key_id=self.key,
                                            aws_secret_access_key=self.secret,
                                            security_token=self.token)
-        else:
+        elif self.key and self.secret:
             s3 = boto.s3.connect_to_region(self.region,
                                            aws_access_key_id=self.key,
                                            aws_secret_access_key=self.secret)
+
+        else:
+            s3 = boto.connect_s3()
 
         return s3.get_bucket(self.bucket_name)
 
