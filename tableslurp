@@ -53,54 +53,42 @@ class DownloadCounter(object):
 
 
 class DownloadHandler(object):
-    key = None
-    secret = None
-    token = None
-    bucket_name = None
-    owner = None
-    group = None
-    preserve = False
-    target = None
-    origin = None
-    prefix = None
-    force = False
-    name = socket.getfqdn()
-    fileset = []
-    queue = Queue()
-    num_threads = 4
-    threads = {}
-
-    def __init__(self, args):
-        self.target = args.target[0]
-        self.origin = args.origin[0]
-        self.preserve = args.preserve
-        self.key = args.aws_key
-        self.secret = args.aws_secret
-        self.region = args.aws_region
-        self.token = args.token
-        self.bucket_name = args.bucket[0]
-        self.num_threads = args.threads
-        self.force = args.force
-        if args.name:
-            self.name = args.name
+    def __init__(self, key=None, secret=None, region=None, token=None, bucket_name=None,
+                 owner=None, group=None, preserve=False, target=None, origin=None,
+                 force=False, name=socket.getfqdn(), file=None,
+                 num_threads=4):
+        self.target = target
+        self.origin = origin
+        self.preserve = preserve
+        self.key = key
+        self.secret = secret
+        self.region = region
+        self.token = token
+        self.bucket_name = bucket_name
+        self.num_threads = num_threads
+        self.force = force
+        self.name = name
         self.prefix = '%s:%s' % (self.name, self.origin)
+        self.queue=Queue()
+        self.fileset=[]
+        self.threads={}
 
 #       It may be a bit sub-optimal, but I rather fail sooner than later
-        (owner, group) = self._build_file_set(args.file)
+        (o, g) = self._build_file_set(file)
 
-        if not self.preserve:
-            owner = args.owner
-            group = args.group
+        if not preserve:
+            o = owner
+            g = group
 
         try:
-            self.owner = pwd.getpwnam(owner).pw_uid
-            self.group = grp.getgrnam(group).gr_gid
+            self.owner = pwd.getpwnam(o).pw_uid
+            self.group = grp.getgrnam(g).gr_gid
         except Exception as e:
             log.error(e)
             raise OSError('User/Group pair %s:%s does not exist' %
                 (owner, group,))
 
-    def _get_bucket(self):
+    def get_bucket(self):
 #       unsure if boto is thread-safe, will reconnect every time
         log.debug('Connecting to s3')
         if self.token:
@@ -122,11 +110,28 @@ class DownloadHandler(object):
         log.info('Building fileset')
         key = None
 #       If you want to restore a file-set in particular
-        bucket = self._get_bucket()
+        bucket = self.get_bucket()
         if target_file:
             key = bucket.get_key('%s/%s-listdir.json' %
                 (self.prefix, target_file))
+
 #       Otherwise try to fetch the most recent one
+#         elif self.recursive:
+#             keyspace_dirs = [_.name for _ in list(bucket.list(prefix='%s/' % self.prefix, delimiter='/'))]
+#
+#             for keyspace_dir in keyspace_dirs:
+#                 table_dirs = [_.name for _ in list(bucket.list(prefix=keyspace_dir, delimiter='/'))]
+#
+#                 for table_dir in table_dirs:
+#                     keys = [_ for _ in bucket.list(prefix=table_dir, delimiter='/') if _.name.endswith('-listdir.json')]
+#
+#                     if keys:
+#                         keys.sort(key=lambda l: parser.parse(l.last_modified))
+#                         key = keys.pop()
+#                         json_data = json.loads(key.get_contents_as_string())
+#                         sstables = json_data.itervalues().next()
+#                         self.fileset[table_dir.replace('%s/' % self.prefix, '').rstrip('/')] = sstables
+
         else:
             prefix_part_count = self.prefix.count('/') + 1
             keys = [_ for _ in bucket.list(prefix='%s/' %
@@ -191,7 +196,7 @@ class DownloadHandler(object):
 
     def _worker(self, idx, queue):
         log.info('Thread #%d processing items' % (idx, ))
-        bucket = self._get_bucket()
+        bucket = self.get_bucket()
 
         while queue.empty() == False:
             queueddownload = queue.get()
@@ -314,10 +319,15 @@ def main():
     ap.add_argument('origin', nargs=1,
         help='Path inside the bucket to the directory you want to download '
         'files from')
+    ap.add_argument('-r', '--recursive', default=False, action='store_true',
+        help='Recursively download the files at the given directory')
     ap.add_argument('target', nargs=1,
         help='Path in the local FS where files should be downloaded to')
     args = ap.parse_args()
-    dh = DownloadHandler(args)
+    dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
+                         bucket_name=args.bucket[0], owner=args.owner, group=args.group, preserve=args.preserve,
+                         target=args.target[0], origin=args.origin[0], force=args.force, name=args.name,
+                         num_threads=args.threads, file=args.file)
     dh.run()
 
 if __name__ == '__main__':
