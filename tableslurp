@@ -336,12 +336,18 @@ def main():
                     table = table_dir.replace('%s/' % prefix, '').rstrip('/')
                     table_to_files_mapping[table] = sstables
                     log.info("Found %s with %d files", table, len(sstables))
-
-    dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
+        for k,v in table_to_files_mapping.iteritems():
+            dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
+                             bucket_name=args.bucket[0], owner=args.owner, group=args.group, preserve=args.preserve,
+                             target=os.path.join(args.target[0], k), origin=os.path.join(args.origin[0], k), force=args.force, name=args.name,
+                             num_threads=args.threads, file=args.file)
+            dh.run()
+    else:
+        dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
                          bucket_name=args.bucket[0], owner=args.owner, group=args.group, preserve=args.preserve,
                          target=args.target[0], origin=args.origin[0], force=args.force, name=args.name,
                          num_threads=args.threads, file=args.file)
-    dh.run()
+        dh.run()
 
 if __name__ == '__main__':
     sys.exit(main())
