@@ -115,23 +115,6 @@ class DownloadHandler(object):
             key = bucket.get_key('%s/%s-listdir.json' %
                 (self.prefix, target_file))
 
-#       Otherwise try to fetch the most recent one
-#         elif self.recursive:
-#             keyspace_dirs = [_.name for _ in list(bucket.list(prefix='%s/' % self.prefix, delimiter='/'))]
-#
-#             for keyspace_dir in keyspace_dirs:
-#                 table_dirs = [_.name for _ in list(bucket.list(prefix=keyspace_dir, delimiter='/'))]
-#
-#                 for table_dir in table_dirs:
-#                     keys = [_ for _ in bucket.list(prefix=table_dir, delimiter='/') if _.name.endswith('-listdir.json')]
-#
-#                     if keys:
-#                         keys.sort(key=lambda l: parser.parse(l.last_modified))
-#                         key = keys.pop()
-#                         json_data = json.loads(key.get_contents_as_string())
-#                         sstables = json_data.itervalues().next()
-#                         self.fileset[table_dir.replace('%s/' % self.prefix, '').rstrip('/')] = sstables
-
         else:
             prefix_part_count = self.prefix.count('/') + 1
             keys = [_ for _ in bucket.list(prefix='%s/' %
@@ -324,6 +307,36 @@ def main():
     ap.add_argument('target', nargs=1,
         help='Path in the local FS where files should be downloaded to')
     args = ap.parse_args()
+    prefix='%s:%s' % (args.name, args.origin[0])
+    if args.recursive:
+        if args.token:
+            s3 = boto.s3.connect_to_region(args.aws_region,
+                                           aws_access_key_id=args.aws_key,
+                                           aws_secret_access_key=args.aws_secret,
+                                           security_token=args.token)
+        else:
+            s3 = boto.s3.connect_to_region(args.aws_region,
+                                           aws_access_key_id=args.aws_key,
+                                           aws_secret_access_key=args.aws_secret)
+        table_to_files_mapping={}
+        bucket = s3.get_bucket(args.bucket[0])
+        keyspace_dirs = [_.name for _ in list(bucket.list(prefix='%s/' % prefix, delimiter='/'))]
+
+        for keyspace_dir in keyspace_dirs:
+            table_dirs = [_.name for _ in list(bucket.list(prefix=keyspace_dir, delimiter='/'))]
+
+            for table_dir in table_dirs:
+                keys = [_ for _ in bucket.list(prefix=table_dir, delimiter='/') if _.name.endswith('-listdir.json')]
+
+                if keys:
+                    keys.sort(key=lambda l: parser.parse(l.last_modified))
+                    key = keys.pop()
+                    json_data = json.loads(key.get_contents_as_string())
+                    sstables = json_data.itervalues().next()
+                    table = table_dir.replace('%s/' % prefix, '').rstrip('/')
+                    table_to_files_mapping[table] = sstables
+                    log.info("Found %s with %d files", table, len(sstables))
+
     dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
                          bucket_name=args.bucket[0], owner=args.owner, group=args.group, preserve=args.preserve,
                          target=args.target[0], origin=args.origin[0], force=args.force, name=args.name,
