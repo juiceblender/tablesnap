@@ -281,10 +281,10 @@ def main():
         help='S3 bucket to download files from')
     ap.add_argument('origin', nargs=1,
         help='Path inside the bucket to the directory you want to download '
-             'files from.'
-             'E.g if your bucket structure is <fqdn or name>/var/lib/cassandra/data/<ks>/<tbl>/<files>'
-             'Then with --recursive, you should provide /var/lib/cassandra/data'
-             'Otherwise, provide /var/lib/cassandra/data/<ks>/<tbl> if you want to restore just one table')
+             'files from. '
+             'E.g if your bucket structure is <fqdn or name>/var/lib/cassandra/data/<ks>/<tbl>/<files>. \n'
+             'With --recursive, you should provide /var/lib/cassandra/data. \n'
+             'Otherwise, provide /var/lib/cassandra/data/<ks>/<tbl> if you want to restore just one table.')
     ap.add_argument('target', nargs=1,
         help='Path in the local FS where files should be downloaded to')
     args = ap.parse_args()
