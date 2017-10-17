@@ -267,9 +267,12 @@ def main():
         help='After download, chgrp files to this group.')
     ap.add_argument('-t', '--threads', type=int, default=4,
         help='Split the download between this many threads')
-    ap.add_argument('-f', '--file',
+    include_group = ap.add_mutually_exclusive_group()
+    include_group.add_argument('-f', '--file',
         help='If specified, will download the file-set this file belongs to '
         'instead of the latest one available.')
+    include_group.add_argument('-r', '--recursive', default=False, action='store_true',
+        help='Recursively download the files at the given origin (path), using latest ones available.')
     ap.add_argument('--force', default=False, action='store_true',
         help='Force download files even if they exist')
     ap.add_argument('-n', '--name', default=socket.getfqdn(),
@@ -278,9 +281,10 @@ def main():
         help='S3 bucket to download files from')
     ap.add_argument('origin', nargs=1,
         help='Path inside the bucket to the directory you want to download '
-        'files from')
-    ap.add_argument('-r', '--recursive', default=False, action='store_true',
-        help='Recursively download the files at the given directory')
+             'files from.'
+             'E.g if your bucket structure is <fqdn or name>/var/lib/cassandra/data/<ks>/<tbl>/<files>'
+             'Then with --recursive, you should provide /var/lib/cassandra/data'
+             'Otherwise, provide /var/lib/cassandra/data/<ks>/<tbl> if you want to restore just one table')
     ap.add_argument('target', nargs=1,
         help='Path in the local FS where files should be downloaded to')
     args = ap.parse_args()
