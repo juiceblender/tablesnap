@@ -331,7 +331,7 @@ def main():
 
         if not key:
             raise LookupError('Cannot find anything to restore from %s:%s/%s' %
-                              (bucket.name, prefix, args.target_file or ''))
+                              (bucket.name, prefix, args.file or ''))
 
         json_data = json.loads(key.get_contents_as_string())
         fileset = json_data[args.origin[0]]
