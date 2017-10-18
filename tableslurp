@@ -151,11 +151,10 @@ class DownloadHandler(object):
         self.bucket_name = args.bucket[0]
         self.num_threads = args.threads
         self.force = args.force
-        self.name = args.name
+        if args.name:
+            self.name = args.name
         self.prefix = prefix
         self.fileset=fileset
-        self.queue = Queue()
-        self.threads={}
 
 #       It may be a bit sub-optimal, but I rather fail sooner than later
         (owner, group) = self._check_metadata()
