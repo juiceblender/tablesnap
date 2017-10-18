@@ -143,6 +143,7 @@ class DownloadHandler(object):
 
     def __init__(self, args=None, target=None, prefix=None, fileset=None):
         self.target = target
+        self.origin = args.origin[0]
         self.preserve = args.preserve
         self.key = args.aws_key
         self.secret = args.aws_secret
