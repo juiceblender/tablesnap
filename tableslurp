@@ -124,38 +124,53 @@ class DownloadCounter(object):
 
 
 class DownloadHandler(object):
-    def __init__(self, key=None, secret=None, region=None, token=None, bucket_name=None,
-                 owner=None, group=None, preserve=False, target=None, prefix=None,
-                 force=False, name=None, fileset=None, num_threads=4):
+    key = None
+    secret = None
+    token = None
+    bucket_name = None
+    owner = None
+    group = None
+    preserve = False
+    target = None
+    origin = None
+    prefix = None
+    force = False
+    name = socket.getfqdn()
+    fileset = []
+    queue = Queue()
+    num_threads = 4
+    threads = {}
+
+    def __init__(self, args=None, target=None, prefix=None, fileset=None):
         self.target = target
-        self.preserve = preserve
-        self.key = key
-        self.secret = secret
-        self.region = region
-        self.token = token
-        self.bucket_name = bucket_name
-        self.num_threads = num_threads
-        self.force = force
-        self.name = name
+        self.preserve = args.preserve
+        self.key = args.key
+        self.secret = args.secret
+        self.region = args.region
+        self.token = args.token
+        self.bucket_name = args.bucket_name
+        self.num_threads = args.num_threads
+        self.force = args.force
+        self.name = args.name
         self.prefix = prefix
         self.fileset=fileset
         self.queue = Queue()
         self.threads={}
 
 #       It may be a bit sub-optimal, but I rather fail sooner than later
-        (end_owner, end_group) = self._check_metadata()
+        (owner, group) = self._check_metadata()
 
-        if not preserve:
-            end_owner = owner
-            end_group = group
+        if not self.preserve:
+            owner = args.owner
+            group = args.group
 
         try:
-            self.owner = pwd.getpwnam(end_owner).pw_uid
-            self.group = grp.getgrnam(end_group).gr_gid
+            self.owner = pwd.getpwnam(owner).pw_uid
+            self.group = grp.getgrnam(group).gr_gid
         except Exception as e:
             log.error(e)
             raise OSError('User/Group pair %s:%s does not exist' %
-                (end_owner, end_group,))
+                (owner, group,))
 
     def _get_bucket(self):
         return get_bucket(self.region, self.key, self.secret, self.token, self.bucket_name)
@@ -348,18 +363,14 @@ def main():
     log.info('Building fileset')
     if args.recursive:
         table_to_files_mapping=build_recursive_file_set(bucket, prefix)
-        for table,files in table_to_files_mapping.iteritems():
-            dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
-                                 bucket_name=args.bucket[0], owner=args.owner, group=args.group, preserve=args.preserve,
-                                 target=os.path.join(args.target[0], table), prefix=os.path.join(prefix, table),
-                                 force=args.force, name=args.name, fileset=files, num_threads=args.threads)
+        for table,fileset in table_to_files_mapping.iteritems():
+            dh = DownloadHandler(args, target=os.path.join(args.target[0], table), prefix=os.path.join(prefix, table),
+                                 fileset=fileset)
             dh.run()
     else:
         fileset=build_single_file_set(bucket, prefix, args.origin[0], args.file)
-        dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
-                             bucket_name=args.bucket[0], owner=args.owner, group=args.group, preserve=args.preserve,
-                             target=args.target[0], prefix=prefix, force=args.force, name=args.name,
-                             fileset=fileset, num_threads=args.threads)
+        dh = DownloadHandler(args, target=args.target[0], prefix=prefix,
+                             fileset=fileset)
         dh.run()
 
 if __name__ == '__main__':
