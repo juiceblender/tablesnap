@@ -60,7 +60,7 @@ def get_bucket(region, key, secret, token, bucket_name):
     return bucket
 
 
-def build_recursive_file_set(bucket, prefix):
+def build_recursive_fileset(bucket, prefix):
     table_to_files_mapping = {}
     # Get all ks folders, e.g /var/lib/cassandra/<ks>
     keyspace_dirs = [_.name for _ in list(bucket.list(prefix='%s/' % prefix, delimiter='/'))]
@@ -86,7 +86,7 @@ def build_recursive_file_set(bucket, prefix):
     return table_to_files_mapping
 
 
-def build_single_file_set(bucket, prefix, origin, target_file):
+def build_single_fileset(bucket, prefix, origin, target_file):
     key = None
     # If you want to restore a file-set in particular
     if target_file:
@@ -362,13 +362,13 @@ def main():
     bucket=get_bucket(args.aws_region, args.aws_key, args.aws_secret, args.token, args.bucket[0])
     log.info('Building fileset')
     if args.recursive:
-        table_to_files_mapping=build_recursive_file_set(bucket, prefix)
+        table_to_files_mapping=build_recursive_fileset(bucket, prefix)
         for table,fileset in table_to_files_mapping.iteritems():
             dh = DownloadHandler(args, target=os.path.join(args.target[0], table), prefix=os.path.join(prefix, table),
                                  fileset=fileset)
             dh.run()
     else:
-        fileset=build_single_file_set(bucket, prefix, args.origin[0], args.file)
+        fileset=build_single_fileset(bucket, prefix, args.origin[0], args.file)
         dh = DownloadHandler(args, target=args.target[0], prefix=prefix,
                              fileset=fileset)
         dh.run()
