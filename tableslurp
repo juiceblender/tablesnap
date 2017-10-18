@@ -40,6 +40,7 @@ if os.environ.get('TDEBUG', False):
 else:
     log.setLevel(logging.INFO)
 
+
 def get_bucket(region, key, secret, token, bucket_name):
 #   unsure if boto is thread-safe, will reconnect every time
     log.debug('Connecting to s3')
@@ -58,6 +59,59 @@ def get_bucket(region, key, secret, token, bucket_name):
     log.debug('Connected to s3')
     return bucket
 
+
+def build_recursive_file_set(bucket, prefix):
+    table_to_files_mapping = {}
+    # Get all ks folders, e.g /var/lib/cassandra/<ks>
+    keyspace_dirs = [_.name for _ in list(bucket.list(prefix='%s/' % prefix, delimiter='/'))]
+
+    for keyspace_dir in keyspace_dirs:
+        # Get all tbl folders for every ks folder, e.g /var/lib/cassandra/<ks>/<tbl>
+        table_dirs = [_.name for _ in list(bucket.list(prefix=keyspace_dir, delimiter='/'))]
+
+        for table_dir in table_dirs:
+            # Get all listdir.json files for every tbl folder,
+            # e.g /var/lib/cassandra/<ks>/<tbl>/mc-1/2/3/4...-Data.db-listdir.json
+            keys = [_ for _ in bucket.list(prefix=table_dir, delimiter='/') if _.name.endswith('-listdir.json')]
+
+            if keys:
+                keys.sort(key=lambda l: parser.parse(l.last_modified))
+                key = keys.pop()
+                json_data = json.loads(key.get_contents_as_string())
+                # There should only ever be one latest listdir.json and hence, one set of (latest) SSTables
+                sstables = json_data.itervalues().next()
+                table = table_dir.replace('%s/' % prefix, '').rstrip('/')
+                table_to_files_mapping[table] = sstables
+                log.info("Found %s with %d files", table, len(sstables))
+    return table_to_files_mapping
+
+
+def build_single_file_set(bucket, prefix, origin, target_file):
+    key = None
+    # If you want to restore a file-set in particular
+    if target_file:
+        key = bucket.get_key('%s/%s-listdir.json' %
+                             (prefix, target_file))
+
+    else:
+        prefix_part_count = prefix.count('/') + 1
+        keys = [_ for _ in bucket.list(prefix='%s/' %
+                                              (prefix,)) if
+                _.name.endswith('-listdir.json') and _.name.count('/') == prefix_part_count]
+        if keys:
+            keys.sort(key=lambda l: parser.parse(l.last_modified))
+            key = keys.pop()
+
+    if not key:
+        raise LookupError('Cannot find anything to restore from %s:%s/%s' %
+                          (bucket.name, prefix, target_file or ''))
+
+    json_data = json.loads(key.get_contents_as_string())
+    fileset = json_data[origin]
+    log.info('Fileset contains %d files to download' % (len(fileset)))
+    return fileset
+
+
 class DownloadCounter(object):
     filename = None
     attemptcount = 0
@@ -72,7 +126,7 @@ class DownloadCounter(object):
 class DownloadHandler(object):
     def __init__(self, key=None, secret=None, region=None, token=None, bucket_name=None,
                  owner=None, group=None, preserve=False, target=None, prefix=None,
-                 force=False, name=socket.getfqdn(), fileset=None, num_threads=4):
+                 force=False, name=None, fileset=None, num_threads=4):
         self.target = target
         self.preserve = preserve
         self.key = key
@@ -89,19 +143,19 @@ class DownloadHandler(object):
         self.threads={}
 
 #       It may be a bit sub-optimal, but I rather fail sooner than later
-        (o, g) = self._check_metadata()
+        (end_owner, end_group) = self._check_metadata()
 
         if not preserve:
-            o = owner
-            g = group
+            end_owner = owner
+            end_group = group
 
         try:
-            self.owner = pwd.getpwnam(o).pw_uid
-            self.group = grp.getgrnam(g).gr_gid
+            self.owner = pwd.getpwnam(end_owner).pw_uid
+            self.group = grp.getgrnam(end_group).gr_gid
         except Exception as e:
             log.error(e)
             raise OSError('User/Group pair %s:%s does not exist' %
-                (owner, group,))
+                (end_owner, end_group,))
 
     def _get_bucket(self):
         return get_bucket(self.region, self.key, self.secret, self.token, self.bucket_name)
@@ -293,53 +347,15 @@ def main():
     bucket=get_bucket(args.aws_region, args.aws_key, args.aws_secret, args.token, args.bucket[0])
     log.info('Building fileset')
     if args.recursive:
-        table_to_files_mapping={}
-        keyspace_dirs = [_.name for _ in list(bucket.list(prefix='%s/' % prefix, delimiter='/'))]
-
-        for keyspace_dir in keyspace_dirs:
-            table_dirs = [_.name for _ in list(bucket.list(prefix=keyspace_dir, delimiter='/'))]
-
-            for table_dir in table_dirs:
-                keys = [_ for _ in bucket.list(prefix=table_dir, delimiter='/') if _.name.endswith('-listdir.json')]
-
-                if keys:
-                    keys.sort(key=lambda l: parser.parse(l.last_modified))
-                    key = keys.pop()
-                    json_data = json.loads(key.get_contents_as_string())
-                    # There should only ever be one latest listdir.json and hence, one set of SSTables
-                    sstables = json_data.itervalues().next()
-                    table = table_dir.replace('%s/' % prefix, '').rstrip('/')
-                    table_to_files_mapping[table] = sstables
-                    log.info("Found %s with %d files", table, len(sstables))
-        for k,v in table_to_files_mapping.iteritems():
+        table_to_files_mapping=build_recursive_file_set(bucket, prefix)
+        for table,files in table_to_files_mapping.iteritems():
             dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
                                  bucket_name=args.bucket[0], owner=args.owner, group=args.group, preserve=args.preserve,
-                                 target=os.path.join(args.target[0], k), prefix=os.path.join(prefix, k),
-                                 force=args.force, name=args.name, fileset=v, num_threads=args.threads)
+                                 target=os.path.join(args.target[0], table), prefix=os.path.join(prefix, table),
+                                 force=args.force, name=args.name, fileset=files, num_threads=args.threads)
             dh.run()
     else:
-        key = None
-        # If you want to restore a file-set in particular
-        if args.file:
-            key = bucket.get_key('%s/%s-listdir.json' %
-                                 (prefix, args.file))
-
-        else:
-            prefix_part_count = prefix.count('/') + 1
-            keys = [_ for _ in bucket.list(prefix='%s/' %
-                                                  (prefix,)) if
-                    _.name.endswith('-listdir.json') and _.name.count('/') == prefix_part_count]
-            if keys:
-                keys.sort(key=lambda l: parser.parse(l.last_modified))
-                key = keys.pop()
-
-        if not key:
-            raise LookupError('Cannot find anything to restore from %s:%s/%s' %
-                              (bucket.name, prefix, args.file or ''))
-
-        json_data = json.loads(key.get_contents_as_string())
-        fileset = json_data[args.origin[0]]
-        log.info('Fileset contains %d files to download' % (len(fileset)))
+        fileset=build_single_file_set(bucket, prefix, args.origin[0], args.file)
         dh = DownloadHandler(key=args.aws_key, secret=args.aws_secret, token=args.token, region=args.aws_region,
                              bucket_name=args.bucket[0], owner=args.owner, group=args.group, preserve=args.preserve,
                              target=args.target[0], prefix=prefix, force=args.force, name=args.name,
