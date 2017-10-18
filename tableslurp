@@ -29,6 +29,8 @@ import pwd
 import socket
 import sys
 from Queue import Queue
+import re
+from datetime import datetime
 
 log = logging.getLogger('tableslurp')
 stderr = logging.StreamHandler()
@@ -39,6 +41,12 @@ if os.environ.get('TDEBUG', False):
     log.setLevel(logging.DEBUG)
 else:
     log.setLevel(logging.INFO)
+
+clog_regex = re.compile('CommitLog-\d-(\d+).log')
+
+
+def parse_clog(clog):
+    return clog_regex.search(clog).group(1)
 
 
 def get_bucket(region, key, secret, token, bucket_name):
@@ -60,8 +68,8 @@ def get_bucket(region, key, secret, token, bucket_name):
     return bucket
 
 
-def build_recursive_fileset(bucket, prefix):
-    table_to_files_mapping = {}
+def find_latest_listdirjson_for_every_table(bucket, prefix):
+    latest_listdirjsons={}
     # Get all ks folders, e.g /var/lib/cassandra/<ks>
     keyspace_dirs = [_.name for _ in list(bucket.list(prefix='%s/' % prefix, delimiter='/'))]
 
@@ -77,14 +85,41 @@ def build_recursive_fileset(bucket, prefix):
             if keys:
                 keys.sort(key=lambda l: parser.parse(l.last_modified))
                 key = keys.pop()
-                json_data = json.loads(key.get_contents_as_string())
-                # There should only ever be one latest listdir.json and hence, one set of (latest) SSTables
-                sstables = json_data.itervalues().next()
                 table = table_dir.replace('%s/' % prefix, '').rstrip('/')
-                table_to_files_mapping[table] = sstables
-                log.info("Found %s with %d files", table, len(sstables))
+                latest_listdirjsons[table] = key
+    return latest_listdirjsons
+
+
+def build_recursive_fileset(bucket, prefix):
+    table_to_latest_listdirjson_mapping = find_latest_listdirjson_for_every_table(bucket, prefix)
+    table_to_files_mapping = {}
+
+    for table, listdirjson in table_to_latest_listdirjson_mapping.items():
+        json_data = json.loads(listdirjson.get_contents_as_string())
+        # There should only ever be one latest listdir.json and hence, one set of (latest) SSTables
+        sstables = json_data.itervalues().next()
+        table_to_files_mapping[table] = sstables
+        log.info("Found %s with %d files", table, len(sstables))
+
     return table_to_files_mapping
 
+
+def build_clog_fileset(bucket, prefix, clog_prefix):
+    fileset=[]
+    table_to_latest_listdirjson_mapping = find_latest_listdirjson_for_every_table(bucket, prefix)
+    listdirjsons = table_to_latest_listdirjson_mapping.values()
+    listdirjsons.sort(key=lambda l: parser.parse(l.last_modified), reverse=True)
+    oldest_key = listdirjsons.pop()
+    oldest_timestamp = datetime.strptime(oldest_key.last_modified, "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%s')
+    oldest_timestamp_ms = int(oldest_timestamp) * 1000
+    clogs = [_.name for _ in bucket.list(prefix='%s/' % clog_prefix)]
+    clogs.sort(reverse=True)
+    for clog in clogs:
+        if parse_clog(clog) > oldest_timestamp_ms:
+            fileset.append(clog.replace('%s/' % clog_prefix, '').rstrip('/'))
+        else:
+            break
+    return fileset
 
 def build_single_fileset(bucket, prefix, origin, target_file):
     key = None
@@ -342,6 +377,10 @@ def main():
         'instead of the latest one available.')
     include_group.add_argument('-r', '--recursive', default=False, action='store_true',
         help='Recursively download the files at the given origin (path), using latest ones available.')
+    include_group.add_argument('--commitlogs',
+        help='Download commitlogs, assuming up to the most recent batch possible. \n'
+             'If your bucket structure is <fqdn or name>/var/lib/cassandra/commitlog \n'
+             'provide /var/lib/cassandra/commitlog. \n')
     ap.add_argument('--force', default=False, action='store_true',
         help='Force download files even if they exist')
     ap.add_argument('-n', '--name', default=socket.getfqdn(),
@@ -367,6 +406,12 @@ def main():
             dh = DownloadHandler(args, target=os.path.join(args.target[0], table), prefix=os.path.join(prefix, table),
                                  fileset=fileset)
             dh.run()
+    elif args.commitlogs:
+        clog_prefix = '%s:%s' % (args.name, args.commitlogs)
+        fileset = build_clog_fileset(bucket, prefix, clog_prefix)
+        dh = DownloadHandler(args, target=os.path.join(args.target[0], 'commitlogs'), prefix=clog_prefix,
+                             fileset=fileset)
+        dh.run()
     else:
         fileset=build_single_fileset(bucket, prefix, args.origin[0], args.file)
         dh = DownloadHandler(args, target=args.target[0], prefix=prefix,
