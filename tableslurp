@@ -144,12 +144,12 @@ class DownloadHandler(object):
     def __init__(self, args=None, target=None, prefix=None, fileset=None):
         self.target = target
         self.preserve = args.preserve
-        self.key = args.key
-        self.secret = args.secret
-        self.region = args.region
+        self.key = args.aws_key
+        self.secret = args.aws_secret
+        self.region = args.aws_region
         self.token = args.token
-        self.bucket_name = args.bucket_name
-        self.num_threads = args.num_threads
+        self.bucket_name = args.bucket[0]
+        self.num_threads = args.threads
         self.force = args.force
         self.name = args.name
         self.prefix = prefix
