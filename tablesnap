@@ -283,12 +283,19 @@ class UploadHandler(pyinotify.ProcessEvent):
                 json_str = json.dumps({dirname: listdir})
                 for r in range(self.retries):
                     try:
-                        s3.put_object(Bucket=bucket,
-                                      Key='%s-listdir.json' % keyname,
-                                      Body=json_str,
-                                      ServerSideEncryption=self.sse,
-                                      StorageClass='REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD',
-                                      SSEKMSKeyId=self.kmskey if self.kmskey is not None else "")
+                        if self.kmskey:
+                            s3.put_object(Bucket=bucket,
+                                          Key='%s-listdir.json' % keyname,
+                                          Body=json_str,
+                                          ServerSideEncryption=self.sse,
+                                          StorageClass='REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD',
+                                          SSEKMSKeyId=self.kmskey)
+                        else:
+                            s3.put_object(Bucket=bucket,
+                                          Key='%s-listdir.json' % keyname,
+                                          Body=json_str,
+                                          ServerSideEncryption=self.sse,
+                                          StorageClass='REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD')
                         break
                     except:
                         if r == self.retries - 1:
