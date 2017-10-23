@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-# import pyinotify
 from __future__ import division
+import pyinotify
 import boto3
 from boto3.s3.transfer import TransferConfig, S3Transfer
 from botocore.exceptions import ClientError
@@ -528,26 +528,26 @@ def main():
                             md5_on_start=args.md5_on_start,
                             retries=(args.retries + 1))
     # handler.add_file('/Users/lerhchuanlow/Accenture/Sydney/tablesnap/tokens.json')
-    handler.add_file('/Users/lerhchuanlow/Accenture/Sydney/Juiceblender/tablesnap/big_file')
-    while True:
-        time.sleep(10)
-        pass
-    # wm = pyinotify.WatchManager()
-    # notifier = pyinotify.Notifier(wm, handler)
-    #
-    # mask = get_mask(args.listen_events)
-    # for path in args.paths:
-    #     ret = wm.add_watch(path, mask, rec=args.recursive,
-    #                        auto_add=args.auto_add)
-    #     if ret[path] == -1:
-    #         default_log.critical('add_watch failed for %s, bailing out!' %
-    #                             (path))
-    #         return 1
-    #
-    # if args.backup:
-    #     backup_files(handler, args.paths, args.recursive, include)
-    #
-    # notifier.loop()
+    # handler.add_file('/Users/lerhchuanlow/Accenture/Sydney/Juiceblender/tablesnap/big_file')
+    # while True:
+    #     time.sleep(10)
+    #     pass
+    wm = pyinotify.WatchManager()
+    notifier = pyinotify.Notifier(wm, handler)
+
+    mask = get_mask(args.listen_events)
+    for path in args.paths:
+        ret = wm.add_watch(path, mask, rec=args.recursive,
+                           auto_add=args.auto_add)
+        if ret[path] == -1:
+            default_log.critical('add_watch failed for %s, bailing out!' %
+                                (path))
+            return 1
+
+    if args.backup:
+        backup_files(handler, args.paths, args.recursive, include)
+
+    notifier.loop()
 
 if __name__ == '__main__':
     sys.exit(main())
