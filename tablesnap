@@ -57,11 +57,11 @@ default_listen_events = ['IN_MOVED_TO', 'IN_CLOSE_WRITE']
 
 
 class ProgressPercentage(object):
-    def __init__(self, filename, filesize):
+    def __init__(self, filename, filesize, log):
         self._filename = filename
         self._filesize = filesize
         self._seen_so_far = 0
-        self.log = default_log
+        self.log = log
 
     def __call__(self, bytes_amount):
         self._seen_so_far += bytes_amount
@@ -69,9 +69,10 @@ class ProgressPercentage(object):
         self.log.info('Uploading {}. {}  out of {} done. Percentage complete: {} %'
                       .format(self._filename, self._seen_so_far, self._filesize, percentage))
 
-# class UploadHandler(pyinotify.ProcessEvent):
-class UploadHandler(object):
-    def __init__(self, threads=None, key=None, secret=None, token=None, region=None, bucket=None,
+class UploadHandler(pyinotify.ProcessEvent):
+# class UploadHandler(object):
+#     def __init__(self, threads=None, key=None, secret=None, token=None, region=None, bucket=None,
+    def my_init(self, threads=None, key=None, secret=None, token=None, region=None, bucket=None,
                 prefix=None, name=None, max_size=None, chunk_size=None,
                 include=None,
                 reduced_redundancy=False,
@@ -329,7 +330,7 @@ class UploadHandler(object):
                     config = TransferConfig(multipart_threshold=self.max_size,
                                             multipart_chunksize=self.chunk_size)
                     transfer = S3Transfer(s3, config=config)
-                    progress_cb = ProgressPercentage(filename=filename, filesize=stat.st_size)
+                    progress_cb = ProgressPercentage(filename=filename, filesize=stat.st_size, log=self.log)
                     extra_args = {'Metadata': {
                                      'stat': meta
                                  },
