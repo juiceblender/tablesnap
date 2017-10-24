@@ -267,7 +267,7 @@ class UploadHandler(pyinotify.ProcessEvent):
                                   Body=body,
                                   ServerSideEncryption=self.sse,
                                   StorageClass='REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD')
-                break
+                self.log.info("Uploaded %s" % key)
             except:
                 if r == self.retries - 1:
                     self.log.critical("Failed to upload key %s" % key)
@@ -306,6 +306,7 @@ class UploadHandler(pyinotify.ProcessEvent):
             for line in p.stdout:
                 if ip in line:
                     tokens.append(line.split()[7])
+            self.log.info('Generated tokens file')
             return ','.join(tokens)
         except:
             self.log.warn('Unable to obtain tokens from Cassandra.')
