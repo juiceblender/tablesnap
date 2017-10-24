@@ -414,30 +414,13 @@ class UploadHandler(pyinotify.ProcessEvent):
                     continue
             # We should generate listdir.json's contents (json_str first), then upload Data.db,
             # Then only upload listdir.json
-            if json_str:
-                for r in range(self.retries):
-                    try:
-                        key = bucket.new_key('%s-listdir.json' % keyname)
-                        key.set_contents_from_string(json_str,
-                            headers={'Content-Type': 'application/json'},
-                            replace=True,
-                            reduced_redundancy=self.reduced_redundancy,
-                            encrypt_key=self.with_sse)
-                        break
-                    except:
-                        if r == self.retries - 1:
-                            self.log.critical("Failed to upload directory "
-                                              "listing.")
-                            raise
-                        bucket = self.get_bucket()
-                        time.sleep(r * 2)
-                        continue
-                if self.freshen:
-                    for file in index[dirname]:
-                        key_to_freshen = self.build_keyname(os.path.join(dirname, file))
-                        self.freshen_key(s3, bucket, key_to_freshen)
+            if self.freshen:
+                for file in listdir:
+                    key_to_freshen = self.build_keyname(os.path.join(dirname, file))
+                    self.freshen_key(s3, bucket, key_to_freshen)
             if self.with_tokens is not None and self.should_create_index(keyname):
-                self.create_tokens_yaml(bucket)
+                tokens = self.generate_tokens(self.with_tokens)
+                self.upload_utility_file(s3, bucket, self.build_keyname('/tokens.yaml'), tokens)
 
         except:
             self.log.error('Error uploading %s\n%s' % (keyname, format_exc()))
