@@ -7,6 +7,8 @@ from botocore.exceptions import ClientError
 import boto
 import hashlib
 import argparse
+import boto
+from boto.exception import S3ResponseError
 from traceback import format_exc
 from threading import Thread
 from Queue import Queue
@@ -20,6 +22,8 @@ import pwd
 import grp
 import re
 import signal
+import StringIO
+import subprocess
 import time
 
 default_log = logging.getLogger('tablesnap')
@@ -80,7 +84,9 @@ class UploadHandler(pyinotify.ProcessEvent):
                 delete_on_backup=False,
                 log=default_log,
                 md5_on_start=False,
-                retries=1):
+                retries=1,
+                freshen=False,
+                with_tokens=None):
         self.key = key
         self.secret = secret
         self.token = token
@@ -102,6 +108,8 @@ class UploadHandler(pyinotify.ProcessEvent):
             self.kmskey = with_sse
         self.delete_on_backup = delete_on_backup
         self.md5_on_start = md5_on_start
+        self.freshen = freshen
+        self.with_tokens = with_tokens
 
         if max_size:
             self.max_size = max_size * 2**20
@@ -241,6 +249,42 @@ class UploadHandler(pyinotify.ProcessEvent):
             JSON file when we upload a .Data.db file. """
         return ("Data.db" in filename)
 
+    def freshen_key(self, s3, bucket, keyname):
+        """Copy a key to itself. This updates (or freshens) the object's
+        timestamp, which can be useful if lifecycle policies are defined
+        on the AWS bucket"""
+        copy_source = {
+            'Bucket': bucket,
+            'Key': keyname
+        }
+        extra_args = {
+            'ServerSideEncryption': self.sse,
+            'StorageClass': 'REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD',
+        }
+        if self.kmskey:
+            extra_args['SSEKMSKeyId'] = self.kmskey
+        try:
+            s3.copy(copy_source, bucket, keyname, extra_args=extra_args)
+            # bucket.copy_key(keyname, self.bucket_name, keyname, encrypt_key=self.with_sse)
+            self.log.info('Freshened key %s', keyname)
+        except S3ResponseError as e:
+            if e.error_code != 'NoSuchKey':
+                self.log.warn('Warning: Failed to freshen %s: %s' % (keyname, e))
+
+    def generate_tokens(self, ip):
+        """Generate a list of tokens for the current node.
+        """
+        tokens = []
+        try:
+            p = subprocess.Popen(['nodetool', 'ring'], stdout=subprocess.PIPE)
+            for line in p.stdout:
+                if ip in line:
+                    tokens.append(line.split()[7])
+            return ','.join(tokens)
+        except:
+            self.log.warn('Unable to obtain tokens from Cassandra.')
+            return tokens
+
     def upload_sstable(self, s3, bucket, keyname, filename):
         # Include the file system metadata so that we have the
         # option of using it to restore the file modes correctly.
@@ -252,6 +296,13 @@ class UploadHandler(pyinotify.ProcessEvent):
             return
 
         if self.key_exists(s3, bucket, keyname, filename, stat):
+        # if self.key_exists(bucket, keyname, filename, stat):
+            if self.freshen:
+                self.freshen_key(s3, bucket, keyname)
+                if self.should_create_index(keyname):
+                    self.freshen_key(s3, bucket, '%s-listdir.json' % keyname)
+                    if self.with_tokens:
+                        self.freshen_key(s3, bucket, self.build_keyname('/tokens.yaml'))
             return
         else:
             try:
@@ -272,6 +323,8 @@ class UploadHandler(pyinotify.ProcessEvent):
 
         try:
             dirname = os.path.dirname(filename)
+            index={}
+            json_str=""
             if self.with_index and self.should_create_index(filename):
                 listdir = []
                 for listfile in os.listdir(dirname):
@@ -358,6 +411,33 @@ class UploadHandler(pyinotify.ProcessEvent):
                         raise
                     s3 = self.get_s3()
                     continue
+            # We should generate listdir.json's contents (json_str first), then upload Data.db,
+            # Then only upload listdir.json
+            if json_str:
+                for r in range(self.retries):
+                    try:
+                        key = bucket.new_key('%s-listdir.json' % keyname)
+                        key.set_contents_from_string(json_str,
+                            headers={'Content-Type': 'application/json'},
+                            replace=True,
+                            reduced_redundancy=self.reduced_redundancy,
+                            encrypt_key=self.with_sse)
+                        break
+                    except:
+                        if r == self.retries - 1:
+                            self.log.critical("Failed to upload directory "
+                                              "listing.")
+                            raise
+                        bucket = self.get_bucket()
+                        time.sleep(r * 2)
+                        continue
+                if self.freshen:
+                    for file in index[dirname]:
+                        key_to_freshen = self.build_keyname(os.path.join(dirname, file))
+                        self.freshen_key(s3, bucket, key_to_freshen)
+            if self.with_tokens is not None and self.should_create_index(keyname):
+                self.create_tokens_yaml(bucket)
+
         except:
             self.log.error('Error uploading %s\n%s' % (keyname, format_exc()))
             raise
@@ -459,6 +539,8 @@ def main():
     parser.add_argument('--with-sse', nargs='?', const='AES256',
         help='Enable server-side encryption for all uploads to S3. Provide either a '
              'KMS key ID or else leave it empty to use AES256 (default)')
+    parser.add_argument('--with-tokens',
+        help='Get a list of tokens for the node as well based on provided IP')
     parser.add_argument('--keyname-separator', default=':',
         help='Separator for the keyname between name and path.')
     parser.add_argument('-t', '--threads', default=default_threads,
@@ -486,18 +568,18 @@ def main():
              'WARNING: If neither exclude nor include are defined, then all '
              'files matching "-tmp" are excluded. This option may be used '
              'more than once.')
-
     parser.add_argument('--max-upload-size', default=max_file_size,
         help='Max size for files to be uploaded before doing multipart '
              '(default %dM)' % max_file_size)
     parser.add_argument('--multipart-chunk-size', default=default_chunk_size,
         help='Chunk size for multipart uploads (default: %dM or 10%%%% of '
              'free memory if default is not available)' % default_chunk_size)
-
     parser.add_argument('--retries', default=0, type=int,
         help='If a file upload fails, retry N times before throwing an'
-             'exception (default: no retrying)')
-
+             'exception, backing off linearly between each retry (default: no retrying)')
+    parser.add_argument('--freshen', action='store_true', default=False,
+                        help='Freshen the file if it exists by doing an in-place copy onto itself. '
+                        'Useful if you have lifecycle policies defined on the bucket.')
     args = parser.parse_args()
 
     # For backwards-compatibility: If neither exclude nor include are set,
@@ -532,7 +614,9 @@ def main():
                             max_size=int(args.max_upload_size),
                             chunk_size=int(args.multipart_chunk_size),
                             md5_on_start=args.md5_on_start,
-                            retries=(args.retries + 1))
+                            retries=(args.retries + 1),
+                            freshen=args.freshen,
+                            with_tokens=args.with_tokens)
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, handler)
 
