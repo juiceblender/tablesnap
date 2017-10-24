@@ -121,6 +121,9 @@ class UploadHandler(pyinotify.ProcessEvent):
         if chunk_size:
             self.chunk_size = chunk_size * 2**20
 
+        if with_tokens:
+            self.cassandra_tokens = []
+
         self.fileq = Queue()
         for i in range(int(threads)):
             t = Thread(target=self.worker)
@@ -300,6 +303,8 @@ class UploadHandler(pyinotify.ProcessEvent):
     def generate_tokens(self, ip):
         """Generate a list of tokens for the current node.
         """
+        if self.cassandra_tokens:
+            return self.cassandra_tokens
         tokens = []
         try:
             p = subprocess.Popen(['nodetool', 'ring'], stdout=subprocess.PIPE)
