@@ -70,8 +70,6 @@ class ProgressPercentage(object):
                       .format(self._filename, self._seen_so_far, self._filesize, percentage))
 
 class UploadHandler(pyinotify.ProcessEvent):
-# class UploadHandler(object):
-#     def __init__(self, threads=None, key=None, secret=None, token=None, region=None, bucket=None,
     def my_init(self, threads=None, key=None, secret=None, token=None, region=None, bucket=None,
                 prefix=None, name=None, max_size=None, chunk_size=None,
                 include=None,
@@ -535,11 +533,6 @@ def main():
                             chunk_size=int(args.multipart_chunk_size),
                             md5_on_start=args.md5_on_start,
                             retries=(args.retries + 1))
-    # handler.add_file('/Users/lerhchuanlow/Accenture/Sydney/tablesnap/tokens.json')
-    # handler.add_file('/Users/lerhchuanlow/Accenture/Sydney/Juiceblender/tablesnap/big_file')
-    # while True:
-    #     time.sleep(10)
-    #     pass
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, handler)
 
