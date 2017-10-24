@@ -74,6 +74,8 @@ class ProgressPercentage(object):
                       .format(self._filename, self._seen_so_far, self._filesize, percentage))
 
 class UploadHandler(pyinotify.ProcessEvent):
+# class UploadHandler(object):
+#     def __init__(self, threads=None, key=None, secret=None, token=None, region=None, bucket=None,
     def my_init(self, threads=None, key=None, secret=None, token=None, region=None, bucket=None,
                 prefix=None, name=None, max_size=None, chunk_size=None,
                 include=None,
@@ -249,6 +251,30 @@ class UploadHandler(pyinotify.ProcessEvent):
             JSON file when we upload a .Data.db file. """
         return ("Data.db" in filename)
 
+    def upload_utility_file(self, s3, bucket, key, body):
+        for r in range(self.retries):
+            try:
+                if self.kmskey:
+                    s3.put_object(Bucket=bucket,
+                                  Key=key,
+                                  Body=body,
+                                  ServerSideEncryption=self.sse,
+                                  StorageClass='REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD',
+                                  SSEKMSKeyId=self.kmskey)
+                else:
+                    s3.put_object(Bucket=bucket,
+                                  Key=key,
+                                  Body=body,
+                                  ServerSideEncryption=self.sse,
+                                  StorageClass='REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD')
+                break
+            except:
+                if r == self.retries - 1:
+                    self.log.critical("Failed to upload key %s" % key)
+                    raise
+                s3 = self.get_s3()
+                continue
+
     def freshen_key(self, s3, bucket, keyname):
         """Copy a key to itself. This updates (or freshens) the object's
         timestamp, which can be useful if lifecycle policies are defined
@@ -264,7 +290,7 @@ class UploadHandler(pyinotify.ProcessEvent):
         if self.kmskey:
             extra_args['SSEKMSKeyId'] = self.kmskey
         try:
-            s3.copy(copy_source, bucket, keyname, extra_args=extra_args)
+            s3.copy(copy_source, bucket, keyname, ExtraArgs=extra_args)
             # bucket.copy_key(keyname, self.bucket_name, keyname, encrypt_key=self.with_sse)
             self.log.info('Freshened key %s', keyname)
         except S3ResponseError as e:
@@ -296,7 +322,6 @@ class UploadHandler(pyinotify.ProcessEvent):
             return
 
         if self.key_exists(s3, bucket, keyname, filename, stat):
-        # if self.key_exists(bucket, keyname, filename, stat):
             if self.freshen:
                 self.freshen_key(s3, bucket, keyname)
                 if self.should_create_index(keyname):
@@ -323,38 +348,14 @@ class UploadHandler(pyinotify.ProcessEvent):
 
         try:
             dirname = os.path.dirname(filename)
-            index={}
-            json_str=""
+            listdir = []
             if self.with_index and self.should_create_index(filename):
-                listdir = []
                 for listfile in os.listdir(dirname):
                     if self.include is None or (self.include is not None
                                                 and self.include(listfile)):
                         listdir.append(listfile)
                 json_str = json.dumps({dirname: listdir})
-                for r in range(self.retries):
-                    try:
-                        if self.kmskey:
-                            s3.put_object(Bucket=bucket,
-                                          Key='%s-listdir.json' % keyname,
-                                          Body=json_str,
-                                          ServerSideEncryption=self.sse,
-                                          StorageClass='REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD',
-                                          SSEKMSKeyId=self.kmskey)
-                        else:
-                            s3.put_object(Bucket=bucket,
-                                          Key='%s-listdir.json' % keyname,
-                                          Body=json_str,
-                                          ServerSideEncryption=self.sse,
-                                          StorageClass='REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD')
-                        break
-                    except:
-                        if r == self.retries - 1:
-                            self.log.critical("Failed to upload directory "
-                                              "listing.")
-                            raise
-                        s3 = self.get_s3()
-                        continue
+                self.upload_utility_file(s3, bucket, '%s-listdir.json' % keyname, json_str)
 
             meta = {'uid': stat.st_uid,
                     'gid': stat.st_gid,
@@ -617,6 +618,12 @@ def main():
                             retries=(args.retries + 1),
                             freshen=args.freshen,
                             with_tokens=args.with_tokens)
+
+    # handler.add_file('/Users/lerhchuanlow/Accenture/Sydney/tablesnap/tokens.json')
+    # handler.add_file('/Users/lerhchuanlow/Accenture/Sydney/Juiceblender/tablesnap/big_file')
+    # while True:
+    #     time.sleep(10)
+    #     pass
     wm = pyinotify.WatchManager()
     notifier = pyinotify.Notifier(wm, handler)
 
