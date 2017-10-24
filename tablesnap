@@ -293,8 +293,8 @@ class UploadHandler(pyinotify.ProcessEvent):
             s3.copy(copy_source, bucket, keyname, ExtraArgs=extra_args)
             # bucket.copy_key(keyname, self.bucket_name, keyname, encrypt_key=self.with_sse)
             self.log.info('Freshened key %s', keyname)
-        except S3ResponseError as e:
-            if e.error_code != 'NoSuchKey':
+        except ClientError as e:
+            if e.response['Error']['Code'] != '404':
                 self.log.warn('Warning: Failed to freshen %s: %s' % (keyname, e))
 
     def generate_tokens(self, ip):
