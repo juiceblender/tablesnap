@@ -123,12 +123,8 @@ def find_listdirjson_for_every_table(s3, bucket, timestamp, prefix):
     return latest_listdirjsons
 
 
-def find_latest_listdirjson_for_every_table(s3, bucket, prefix):
-    return find_listdirjson_for_every_table(s3, bucket, datetime.utcnow().replace(tzinfo=utc), prefix=prefix)
-
-
-def build_recursive_fileset(s3, bucket, prefix):
-    table_to_latest_listdirjson_mapping = find_latest_listdirjson_for_every_table(s3, bucket, prefix)
+def build_recursive_fileset(s3, bucket, timestamp, prefix):
+    table_to_latest_listdirjson_mapping = find_listdirjson_for_every_table(s3, bucket, timestamp, prefix)
     table_to_files_mapping = {}
 
     for table, listdirjson in table_to_latest_listdirjson_mapping.items():
@@ -141,9 +137,9 @@ def build_recursive_fileset(s3, bucket, prefix):
     return table_to_files_mapping
 
 
-def build_clog_fileset(s3, bucket, prefix, clog_prefix):
+def build_clog_fileset(s3, bucket, timestamp, prefix, clog_prefix):
     fileset=[]
-    table_to_latest_listdirjson_mapping = find_latest_listdirjson_for_every_table(s3, bucket, prefix)
+    table_to_latest_listdirjson_mapping = find_listdirjson_for_every_table(s3, bucket, timestamp, prefix)
     listdirjsons = table_to_latest_listdirjson_mapping.values()
     listdirjsons.sort(key=lambda l: l['LastModified'], reverse=True)
     oldest_key = listdirjsons.pop()
@@ -159,7 +155,7 @@ def build_clog_fileset(s3, bucket, prefix, clog_prefix):
     return fileset
 
 
-def build_single_fileset(s3, bucket, prefix, origin, target_file):
+def build_single_fileset(s3, bucket, timestamp, prefix, origin, target_file):
     listdirjson = None
     # If you want to restore a fileset in particular
     if target_file:
@@ -170,7 +166,8 @@ def build_single_fileset(s3, bucket, prefix, origin, target_file):
         prefix_part_count = prefix.count('/') + 1
         keys = [_ for _ in s3.list_objects_v2(Bucket=bucket, Prefix='%s/' %
                                               (prefix,))['Contents'] if
-                _['Key'].endswith('-listdir.json') and _['Key'].count('/') == prefix_part_count]
+                _['Key'].endswith('-listdir.json') and _['Key'].count('/') == prefix_part_count
+                and _['LastModified'] < timestamp]
         if keys:
             keys.sort(key=lambda l: l['LastModified'])
             key = keys.pop()
@@ -423,9 +420,9 @@ def main():
         help='Download commitlogs, assuming up to the most recent batch possible. \n'
              'If your bucket structure is <fqdn or name>/var/lib/cassandra/commitlog \n'
              'provide /var/lib/cassandra/commitlog. \n')
-    ap.add_argument('--date', type=lambda d: datetime.strptime(d, '%Y-%m-%dT%H:%M:%S'),
+    ap.add_argument('--date', type=lambda d: parser.parse(d),
                     help='Date to restore to, please specify in YY-MM-DD HH:MM:SS in UTC time.',
-                    default=datetime.utcnow().replace(tzinfo=utc))
+                    default=datetime.utcnow())
     ap.add_argument('--force', default=False, action='store_true',
         help='Force download files even if they exist')
     ap.add_argument('-n', '--name', default=socket.getfqdn(),
@@ -445,21 +442,22 @@ def main():
     prefix='%s:%s' % (args.name, args.origin[0])
     s3=get_s3(args.aws_region, args.aws_key, args.aws_secret, args.token)
     bucket=args.bucket[0]
+    timestamp=args.date.replace(tzinfo=utc)
     log.info('Building fileset')
     if args.recursive:
-        table_to_files_mapping=build_recursive_fileset(s3, bucket, prefix)
+        table_to_files_mapping=build_recursive_fileset(s3, bucket, timestamp, prefix)
         for table,fileset in table_to_files_mapping.iteritems():
             dh = DownloadHandler(args, target=os.path.join(args.target[0], table),
                                  prefix=os.path.join(prefix, table), fileset=fileset)
             dh.run()
     elif args.commitlogs:
         clog_prefix = '%s:%s' % (args.name, args.commitlogs)
-        fileset = build_clog_fileset(s3, bucket, prefix, clog_prefix)
+        fileset = build_clog_fileset(s3, bucket, timestamp, prefix, clog_prefix)
         dh = DownloadHandler(args, target=os.path.join(args.target[0]), prefix=clog_prefix,
                              fileset=fileset)
         dh.run()
     else:
-        fileset=build_single_fileset(s3, bucket, prefix, args.origin[0], args.file)
+        fileset=build_single_fileset(s3, bucket, timestamp, prefix, args.origin[0], args.file)
         dh = DownloadHandler(args, target=args.target[0], prefix=prefix,
                              fileset=fileset)
         dh.run()
