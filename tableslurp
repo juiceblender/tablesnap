@@ -151,6 +151,11 @@ def build_clog_fileset(s3, bucket, timestamp, prefix, clog_prefix):
         if parse_clog(clog) > oldest_timestamp_ms:
             fileset.append(clog.replace('%s/' % clog_prefix, '').rstrip('/'))
         else:
+            # Append this as the very last CommitLog in case it has mutations to replay.
+            # For example, suppose we have CLogs at t=30, t=50 and t=70 and we want to restore to t=40.
+            # We should include the CLog t=50, and use commitlog_archiving.properties to set restore
+            # point in time to t=40.
+            fileset.append(clog.replace('%s/' % clog_prefix, '').rstrip('/'))
             break
     return fileset
 
