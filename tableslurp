@@ -31,7 +31,9 @@ import socket
 import sys
 from Queue import Queue
 import re
+import time
 from datetime import datetime
+from datetime import timedelta, tzinfo
 from botocore.exceptions import ClientError
 
 log = logging.getLogger('tableslurp')
@@ -46,6 +48,18 @@ else:
 
 clog_regex = re.compile('CommitLog-\d-(\d+).log')
 
+
+class UTC(tzinfo):
+    def utcoffset(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return "UTC"
+
+    def dst(self, dt):
+        return timedelta(0)
+
+utc = UTC()
 
 def parse_clog(clog):
     return clog_regex.search(clog).group(1)
@@ -130,9 +144,11 @@ def build_clog_fileset(s3, bucket, prefix, clog_prefix):
     listdirjsons = table_to_latest_listdirjson_mapping.values()
     listdirjsons.sort(key=lambda l: l['LastModified'], reverse=True)
     oldest_key = listdirjsons.pop()
-    oldest_timestamp = datetime.strptime(oldest_key['LastModified'], "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%s')
-    oldest_timestamp_ms = int(oldest_timestamp) * 1000
-    clogs = [_.name for _ in s3.list_objects_v2(Bucket=bucket, Prefix='%s/' % clog_prefix)]
+    epoch = datetime.utcfromtimestamp(0).replace(tzinfo=utc)
+    oldest_timestamp_ms = int((oldest_key['LastModified'] - epoch).total_seconds()) * 1000
+    # oldest_timestamp = datetime.strptime(oldest_key['LastModified'], "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%s')
+    # oldest_timestamp_ms = int(oldest_timestamp) * 1000
+    clogs = [_['Key'] for _ in s3.list_objects_v2(Bucket=bucket, Prefix='%s/' % clog_prefix)['Contents']]
     clogs.sort(reverse=True)
     for clog in clogs:
         if parse_clog(clog) > oldest_timestamp_ms:
@@ -406,7 +422,8 @@ def main():
         help='Download commitlogs, assuming up to the most recent batch possible. \n'
              'If your bucket structure is <fqdn or name>/var/lib/cassandra/commitlog \n'
              'provide /var/lib/cassandra/commitlog. \n')
-    ap.add_argument('--timestamp')
+    ap.add_argument('--date', type=lambda d: datetime.strptime(d, '%Y-%m-%dT%H:%M:%S'),
+                    help='Date to restore to, please specify in YY-MM-DD HH:MM:SS in UTC time.')
     ap.add_argument('--force', default=False, action='store_true',
         help='Force download files even if they exist')
     ap.add_argument('-n', '--name', default=socket.getfqdn(),
