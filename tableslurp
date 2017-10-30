@@ -19,6 +19,7 @@
 
 import argparse
 import boto
+import boto3
 from dateutil import parser
 import grp
 import json
@@ -31,6 +32,7 @@ import sys
 from Queue import Queue
 import re
 from datetime import datetime
+from botocore.exceptions import ClientError
 
 log = logging.getLogger('tableslurp')
 stderr = logging.StreamHandler()
@@ -49,70 +51,88 @@ def parse_clog(clog):
     return clog_regex.search(clog).group(1)
 
 
-def get_bucket(region, key, secret, token, bucket_name):
+def get_s3(region, key, secret, token):
 #   unsure if boto is thread-safe, will reconnect every time
     log.debug('Connecting to s3')
     if token:
-        conn = boto.s3.connect_to_region(region,
-                                         aws_access_key_id=key,
-                                         aws_secret_access_key=secret,
-                                         security_token=token)
+        s3 = boto3.client('s3', region_name='ap-southeast-2',
+                            aws_access_key_id=key,
+                            aws_secret_access_key=secret,
+                            security_token=token)
     else:
-        conn = boto.s3.connect_to_region(region,
-                                         aws_access_key_id=key,
-                                         aws_secret_access_key=secret,
-                                         security_token=token)
-
-    bucket = conn.get_bucket(bucket_name)
-    log.debug('Connected to s3')
-    return bucket
+        s3 = boto3.client('s3', region_name='ap-southeast-2',
+                          aws_access_key_id=key,
+                          aws_secret_access_key=secret)
+    return s3
 
 
-def find_latest_listdirjson_for_every_table(bucket, prefix):
+def get_matching_s3_keys(s3, bucket, prefix='', suffix=''):
+    kwargs = {'Bucket': bucket, 'Prefix': prefix}
+
+    while True:
+
+        # The S3 API response is a large blob of metadata.
+        # 'Contents' contains information about the listed objects.
+        resp = s3.list_objects_v2(**kwargs)
+        for key in resp['Contents']:
+            keyname = key['Key']
+            if keyname.startswith(prefix) and keyname.endswith(suffix):
+                yield key
+
+        # The S3 API is paginated, returning up to 1000 keys at a time.
+        # Pass the continuation token into the next response, until we
+        # reach the final page (when this field is missing).
+        try:
+            kwargs['ContinuationToken'] = resp['NextContinuationToken']
+        except KeyError:
+            break
+
+
+def find_latest_listdirjson_for_every_table(s3, bucket, prefix):
     latest_listdirjsons={}
     # Get all ks folders, e.g /var/lib/cassandra/<ks>
-    keyspace_dirs = [_.name for _ in list(bucket.list(prefix='%s/' % prefix, delimiter='/'))]
+    keyspace_dirs = [_['Prefix'] for _ in s3.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter='/')['CommonPrefixes']]
 
     for keyspace_dir in keyspace_dirs:
         # Get all tbl folders for every ks folder, e.g /var/lib/cassandra/<ks>/<tbl>
-        table_dirs = [_.name for _ in list(bucket.list(prefix=keyspace_dir, delimiter='/'))]
+        table_dirs = [_['Prefix'] for _ in s3.list_objects_v2(Bucket=bucket, Prefix=keyspace_dir, Delimiter='/')['CommonPrefixes']]
 
         for table_dir in table_dirs:
             # Get all listdir.json files for every tbl folder,
             # e.g /var/lib/cassandra/<ks>/<tbl>/mc-1/2/3/4...-Data.db-listdir.json
-            keys = [_ for _ in bucket.list(prefix=table_dir, delimiter='/') if _.name.endswith('-listdir.json')]
+            keys = [_ for _ in get_matching_s3_keys(s3, bucket, prefix=table_dir, suffix='listdir.json')]
 
             if keys:
-                keys.sort(key=lambda l: parser.parse(l.last_modified))
+                keys.sort(key=lambda l: l['LastModified'])
                 key = keys.pop()
-                table = table_dir.replace('%s/' % prefix, '').rstrip('/')
+                table = table_dir.replace('{}'.format(prefix), '').rstrip('/')
                 latest_listdirjsons[table] = key
     return latest_listdirjsons
 
 
-def build_recursive_fileset(bucket, prefix):
-    table_to_latest_listdirjson_mapping = find_latest_listdirjson_for_every_table(bucket, prefix)
+def build_recursive_fileset(s3, bucket, prefix):
+    table_to_latest_listdirjson_mapping = find_latest_listdirjson_for_every_table(s3, bucket, prefix)
     table_to_files_mapping = {}
 
     for table, listdirjson in table_to_latest_listdirjson_mapping.items():
-        json_data = json.loads(listdirjson.get_contents_as_string())
+        json_data = json.loads(s3.get_object(Bucket=bucket, Key=listdirjson['Key'])['Body'].read())
         # There should only ever be one latest listdir.json and hence, one set of (latest) SSTables
         sstables = json_data.itervalues().next()
         table_to_files_mapping[table] = sstables
-        log.info("Found %s with %d files", table, len(sstables))
+        print("Found {} with {} files".format(table, len(sstables)))
 
     return table_to_files_mapping
 
 
-def build_clog_fileset(bucket, prefix, clog_prefix):
+def build_clog_fileset(s3, bucket, prefix, clog_prefix):
     fileset=[]
-    table_to_latest_listdirjson_mapping = find_latest_listdirjson_for_every_table(bucket, prefix)
+    table_to_latest_listdirjson_mapping = find_latest_listdirjson_for_every_table(s3, bucket, prefix)
     listdirjsons = table_to_latest_listdirjson_mapping.values()
-    listdirjsons.sort(key=lambda l: parser.parse(l.last_modified), reverse=True)
+    listdirjsons.sort(key=lambda l: l['LastModified'], reverse=True)
     oldest_key = listdirjsons.pop()
-    oldest_timestamp = datetime.strptime(oldest_key.last_modified, "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%s')
+    oldest_timestamp = datetime.strptime(oldest_key['LastModified'], "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%s')
     oldest_timestamp_ms = int(oldest_timestamp) * 1000
-    clogs = [_.name for _ in bucket.list(prefix='%s/' % clog_prefix)]
+    clogs = [_.name for _ in s3.list_objects_v2(Bucket=bucket, Prefix='%s/' % clog_prefix)]
     clogs.sort(reverse=True)
     for clog in clogs:
         if parse_clog(clog) > oldest_timestamp_ms:
@@ -122,25 +142,25 @@ def build_clog_fileset(bucket, prefix, clog_prefix):
     return fileset
 
 
-def build_single_fileset(bucket, prefix, origin, target_file):
+def build_single_fileset(s3, bucket, prefix, origin, target_file):
     key = None
     # If you want to restore a fileset in particular
     if target_file:
-        key = bucket.get_key('%s/%s-listdir.json' %
+        key = s3.get_object(Bucket=bucket, Key='%s/%s-listdir.json' %
                              (prefix, target_file))
 
     else:
         prefix_part_count = prefix.count('/') + 1
-        keys = [_ for _ in bucket.list(prefix='%s/' %
+        keys = [_ for _ in s3.list_objects_v2(Bucket=bucket, Prefix='%s/' %
                                               (prefix,)) if
                 _.name.endswith('-listdir.json') and _.name.count('/') == prefix_part_count]
         if keys:
-            keys.sort(key=lambda l: parser.parse(l.last_modified))
+            keys.sort(key=lambda l: l['LastModified'])
             key = keys.pop()
 
     if not key:
         raise LookupError('Cannot find anything to restore from %s:%s/%s' %
-                          (bucket.name, prefix, target_file or ''))
+                          (bucket, prefix, target_file or ''))
 
     json_data = json.loads(key.get_contents_as_string())
     fileset = json_data[origin]
@@ -208,14 +228,14 @@ class DownloadHandler(object):
             raise OSError('User/Group pair %s:%s does not exist' %
                 (owner, group,))
 
-    def _get_bucket(self):
-        return get_bucket(self.region, self.key, self.secret, self.token, self.bucket_name)
+    def _get_s3(self):
+        return get_s3(self.region, self.key, self.secret, self.token)
 
     def _check_metadata(self):
-        bucket = self._get_bucket()
+        s3 = self._get_s3()
         k = None
         for fileset in self.fileset:
-            k = bucket.get_key('%s/%s' % (self.prefix, fileset))
+            k = s3.head_object(Bucket=self.bucket_name, Key='%s/%s' % (self.prefix, fileset))
             if k is not None:
                 break
 
@@ -227,7 +247,7 @@ class DownloadHandler(object):
             log.warn('Can not fetch metadata information')
             return (owner, group)
 
-        meta = k.get_metadata('stat')
+        meta = k['Metadata']['stat']
         log.debug('Metadata is %s' % (meta,))
         if meta:
             try:
@@ -262,7 +282,7 @@ class DownloadHandler(object):
 
     def _worker(self, idx, queue):
         log.info('Thread #%d processing items' % (idx, ))
-        bucket = self._get_bucket()
+        s3 = self._get_s3()
 
         while queue.empty() == False:
             queueddownload = queue.get()
@@ -277,27 +297,30 @@ class DownloadHandler(object):
                 download = False
                 #Retry downloading until we succeed
                 try:
-                    key = bucket.get_key(keypath)
+                    key = s3.head_object(Bucket=self.bucket_name, Key=keypath)
                     log.debug('Key object is %s' % key)
                     if os.path.isfile(destfile):
                         stat = os.stat(destfile)
                         if self.force:
                             download = True
-                        elif stat.st_size != key.size:
+                        elif stat.st_size != key['ContentLength']:
                             log.info('%s and %s size differs, will '
-                                're-download' % (key.name, destfile,))
+                                're-download' % (keypath, destfile,))
                             download = True
                     else:
                         download = True
 
                     if download and key:
                         log.info('Downloading %s from %s to %s' %
-                            (key.name, bucket.name, destfile))
-                        key.get_contents_to_filename(destfile)
+                            (keypath, self.bucket_name, destfile))
+                        s3.download_file(Bucket=self.bucket_name, Key=keypath, Filename=destfile)
 
                         log.debug('Changing owner:group for %s to %s:%s' %
                             (destfile, self.owner, self.group,))
                         os.chown(destfile, self.owner, self.group)
+                except ClientError as e:
+                    if e.response['Error']['Code'] == '404':
+                        log.debug('Metadata for the object does not exist %s' % (keypath,))
 
                 except Exception as e:
                     log.debug(e)
@@ -383,6 +406,7 @@ def main():
         help='Download commitlogs, assuming up to the most recent batch possible. \n'
              'If your bucket structure is <fqdn or name>/var/lib/cassandra/commitlog \n'
              'provide /var/lib/cassandra/commitlog. \n')
+    ap.add_argument('--timestamp')
     ap.add_argument('--force', default=False, action='store_true',
         help='Force download files even if they exist')
     ap.add_argument('-n', '--name', default=socket.getfqdn(),
@@ -400,22 +424,23 @@ def main():
     args = ap.parse_args()
 
     prefix='%s:%s' % (args.name, args.origin[0])
-    bucket=get_bucket(args.aws_region, args.aws_key, args.aws_secret, args.token, args.bucket[0])
+    s3=get_s3(args.aws_region, args.aws_key, args.aws_secret, args.token)
+    bucket=args.bucket[0]
     log.info('Building fileset')
     if args.recursive:
-        table_to_files_mapping=build_recursive_fileset(bucket, prefix)
+        table_to_files_mapping=build_recursive_fileset(s3, bucket, prefix)
         for table,fileset in table_to_files_mapping.iteritems():
             dh = DownloadHandler(args, target=os.path.join(args.target[0], table),
                                  prefix=os.path.join(prefix, table), fileset=fileset)
             dh.run()
     elif args.commitlogs:
         clog_prefix = '%s:%s' % (args.name, args.commitlogs)
-        fileset = build_clog_fileset(bucket, prefix, clog_prefix)
+        fileset = build_clog_fileset(s3, bucket, prefix, clog_prefix)
         dh = DownloadHandler(args, target=os.path.join(args.target[0]), prefix=clog_prefix,
                              fileset=fileset)
         dh.run()
     else:
-        fileset=build_single_fileset(bucket, prefix, args.origin[0], args.file)
+        fileset=build_single_fileset(s3, bucket, prefix, args.origin[0], args.file)
         dh = DownloadHandler(args, target=args.target[0], prefix=prefix,
                              fileset=fileset)
         dh.run()
