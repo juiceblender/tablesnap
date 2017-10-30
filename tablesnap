@@ -14,6 +14,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 from Queue import Queue
 from threading import Thread
 from traceback import format_exc
@@ -156,7 +157,7 @@ class UploadHandler(pyinotify.ProcessEvent):
                 self.upload_sstable(s3, self.bucket, keyname, f)
             except:
                 self.log.critical("Failed uploading %s. Aborting.\n%s" %
-                             (f, format_exc()))
+                                  (f, format_exc()))
                 # Brute force kill self
                 os.kill(os.getpid(), signal.SIGKILL)
 
@@ -189,20 +190,21 @@ class UploadHandler(pyinotify.ProcessEvent):
                     self.log.debug('Key %s does not exist' % (keyname,))
                     return False
                 s3 = self.get_s3()
+                time.sleep(r * 2)
                 continue
 
         if key is None:
             self.log.critical("Failed to lookup keyname %s after %d"
                               " retries\n%s" %
-                             (keyname, self.retries, format_exc()))
+                              (keyname, self.retries, format_exc()))
             raise
 
         if key['ContentLength'] != stat.st_size:
             self.log.warning('ATTENTION: your source (%s) and target (%s) '
-                'sizes differ, you should take a look. As immutable files '
-                'never change, one must assume the local file got corrupted '
-                'and the right version is the one in S3. Will skip this file '
-                'to avoid future complications' % (filename, keyname, ))
+                             'sizes differ, you should take a look. As immutable files '
+                             'never change, one must assume the local file got corrupted '
+                             'and the right version is the one in S3. Will skip this file '
+                             'to avoid future complications' % (filename, keyname, ))
             return True
         else:
             if not self.md5_on_start:
@@ -218,7 +220,7 @@ class UploadHandler(pyinotify.ProcessEvent):
                         return True
 
                     self.log.critical("Failed to open file: %s (%s)\n%s" %
-                                 (filename, strerror, format_exc(),))
+                                      (filename, strerror, format_exc(),))
                     raise
 
                 self.log.debug('Computed etag: %s' % (etag,))
@@ -226,7 +228,7 @@ class UploadHandler(pyinotify.ProcessEvent):
                 meta = key['ETag'][1:-1]
 
                 self.log.debug('MD5 metadata comparison: %s == %s? : %s' %
-                              (etag, meta, (etag == meta)))
+                               (etag, meta, (etag == meta)))
                 result = (etag == meta)
 
                 if result:
@@ -234,11 +236,11 @@ class UploadHandler(pyinotify.ProcessEvent):
                                   % (keyname))
                 else:
                     self.log.warning('ATTENTION: your source (%s) and target (%s) '
-                        'MD5 hashes differ, you should take a look. As immutable '
-                        'files never change, one must assume the local file got '
-                        'corrupted and the right version is the one in S3. Will '
-                        'skip this file to avoid future complications' %
-                        (filename, keyname, ))
+                                     'MD5 hashes differ, you should take a look. As immutable '
+                                     'files never change, one must assume the local file got '
+                                     'corrupted and the right version is the one in S3. Will '
+                                     'skip this file to avoid future complications' %
+                                     (filename, keyname, ))
 
                 return result
 
@@ -270,6 +272,7 @@ class UploadHandler(pyinotify.ProcessEvent):
                     self.log.critical("Failed to upload key %s" % key)
                     raise
                 s3 = self.get_s3()
+                time.sleep(r * 2)
                 continue
 
     def generate_tokens(self, ip):
@@ -352,11 +355,11 @@ class UploadHandler(pyinotify.ProcessEvent):
             for r in range(self.retries):
                 try:
                     self.log.debug('File size check: %s > %s ? : %s' %
-                        (stat.st_size, self.max_size,
-                        (stat.st_size > self.max_size),))
+                                   (stat.st_size, self.max_size,
+                                    (stat.st_size > self.max_size),))
                     if stat.st_size > self.max_size:
                         self.log.debug('Performing multipart upload for %s' %
-                                     (filename))
+                                       (filename))
                     else:
                         self.log.debug('Performing monolithic upload')
                     config = TransferConfig(multipart_threshold=self.max_size,
@@ -364,10 +367,10 @@ class UploadHandler(pyinotify.ProcessEvent):
                     transfer = S3Transfer(s3, config=config)
                     progress_cb = ProgressPercentage(filename=filename, filesize=stat.st_size, log=self.log)
                     extra_args = {'Metadata': {
-                                     'stat': meta
-                                 },
-                                 'ServerSideEncryption': self.sse,
-                                 'StorageClass': 'REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD',
+                        'stat': meta
+                    },
+                        'ServerSideEncryption': self.sse,
+                        'StorageClass': 'REDUCED_REDUNDANCY' if self.reduced_redundancy else 'STANDARD',
                     }
                     if self.kmskey:
                         extra_args['SSEKMSKeyId'] = self.kmskey
@@ -384,6 +387,7 @@ class UploadHandler(pyinotify.ProcessEvent):
                         self.log.critical("Failed to upload file contents.")
                         raise
                     s3 = self.get_s3()
+                    time.sleep(r * 2)
                     continue
             if self.with_tokens is not None and self.should_create_index(keyname):
                 tokens = self.generate_tokens(self.with_tokens)
@@ -454,80 +458,80 @@ def calculate_s3_etag(file_path, chunk_size=8 * 1024 * 1024):
 
 def main():
     parser = argparse.ArgumentParser(description='Tablesnap is a script that '
-        'uses inotify to monitor a directory for events and reacts to them by '
-        'spawning a new thread to upload that file to Amazon S3, along with '
-        'a JSON-formatted list of what other files were in the directory at '
-        'the time of the copy.')
+                                                 'uses inotify to monitor a directory for events and reacts to them by '
+                                                 'spawning a new thread to upload that file to Amazon S3, along with '
+                                                 'a JSON-formatted list of what other files were in the directory at '
+                                                 'the time of the copy.')
     parser.add_argument('bucket', help='S3 bucket')
     parser.add_argument('paths', nargs='+', help='Paths to be watched')
     parser.add_argument('-k', '--aws-key',
-        default=os.environ.get('AWS_ACCESS_KEY_ID'),
-        help='Amazon S3 Key (default from AWS_ACCESS_KEY_ID in environment)')
+                        default=os.environ.get('AWS_ACCESS_KEY_ID'),
+                        help='Amazon S3 Key (default from AWS_ACCESS_KEY_ID in environment)')
     parser.add_argument('-s', '--aws-secret',
-        default=os.environ.get('AWS_SECRET_ACCESS_KEY'),
-        help='Amazon S3 Secret (default from AWS_SECRET_ACCESS_KEY in environment)')
+                        default=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                        help='Amazon S3 Secret (default from AWS_SECRET_ACCESS_KEY in environment)')
     parser.add_argument('--aws-region',
-        default='us-east-1',
-        choices=[region.name for region in boto.s3.regions()],
-        help='AWS region to connect to.')
+                        default='us-east-1',
+                        choices=[region.name for region in boto.s3.regions()],
+                        help='AWS region to connect to.')
     parser.add_argument('--aws-token',
-        default=os.environ.get('AWS_SECURITY_TOKEN'),
-        help='Amazon S3 Token (default from AWS_SECURITY_TOKEN in environment)')
+                        default=os.environ.get('AWS_SECURITY_TOKEN'),
+                        help='Amazon S3 Token (default from AWS_SECURITY_TOKEN in environment)')
     parser.add_argument('-r', '--recursive', action='store_true',
-        default=False,
-        help='Recursively watch the given path(s)s for new SSTables')
+                        default=False,
+                        help='Recursively watch the given path(s)s for new SSTables')
     parser.add_argument('-a', '--auto-add', action='store_true', default=False,
-        help='Automatically start watching new subdirectories within path(s)')
+                        help='Automatically start watching new subdirectories within path(s)')
     parser.add_argument('-B', '--backup', action='store_true', default=False,
-        help='Backup existing files to S3 if they are not already there')
+                        help='Backup existing files to S3 if they are not already there')
     parser.add_argument('-R', '--reduced-redundancy', action='store_true',
-        default=False, help='Use reduced redundancy for files uploaded to S3.')
+                        default=False, help='Use reduced redundancy for files uploaded to S3.')
     parser.add_argument('-p', '--prefix', default='',
-        help='Set a string prefix for uploaded files in S3')
+                        help='Set a string prefix for uploaded files in S3')
     parser.add_argument('--without-index', action='store_true', default=False,
-        help='Do not store a JSON representation of the current directory '
-             'listing in S3 when uploading a file to S3.')
+                        help='Do not store a JSON representation of the current directory '
+                             'listing in S3 when uploading a file to S3.')
     parser.add_argument('--with-sse', nargs='?', const='AES256',
-        help='Enable server-side encryption for all uploads to S3. Provide either a '
-             'KMS key ID or else leave it empty to use AES256 (default)')
+                        help='Enable server-side encryption for all uploads to S3. Provide either a '
+                             'KMS key ID or else leave it empty to use AES256 (default)')
     parser.add_argument('--with-tokens',
-        help='Get a list of tokens for the node as well based on provided IP')
+                        help='Get a list of tokens for the node as well based on provided IP')
     parser.add_argument('--keyname-separator', default=':',
-        help='Separator for the keyname between name and path.')
+                        help='Separator for the keyname between name and path.')
     parser.add_argument('-t', '--threads', default=default_threads,
-        help='Number of writer threads')
+                        help='Number of writer threads')
     parser.add_argument('-n', '--name',
-        help='Use this name instead of the FQDN to identify the files from '
-             'this host')
+                        help='Use this name instead of the FQDN to identify the files from '
+                             'this host')
     parser.add_argument('--md5-on-start', default=False, action='store_true',
-        help='If you want to compute *every file* for its MD5 checksum at '
-             'start time, enable this option.')
+                        help='If you want to compute *every file* for its MD5 checksum at '
+                             'start time, enable this option.')
     parser.add_argument('--listen-events', action='append',
-        choices=['IN_MOVED_TO', 'IN_CLOSE_WRITE', 'IN_CREATE'],
-        help='Which events to listen on, can be specified multiple times. '
-             'Values: IN_MOVED_TO, IN_CLOSE_WRITE, IN_CREATE (default IN_MOVED_TO, IN_CLOSE_WRITE)')
+                        choices=['IN_MOVED_TO', 'IN_CLOSE_WRITE', 'IN_CREATE'],
+                        help='Which events to listen on, can be specified multiple times. '
+                             'Values: IN_MOVED_TO, IN_CLOSE_WRITE, IN_CREATE (default IN_MOVED_TO, IN_CLOSE_WRITE)')
     parser.add_argument('--delete-on-backup', action='store_true', default=False,
                         help='Delete the file upon successful backup.')
     include_group = parser.add_mutually_exclusive_group()
     include_group.add_argument('-e', '--exclude', default=None, nargs='+',
-        help='Exclude files matching this regular expression from upload.'
-             'WARNING: If neither exclude nor include are defined, then all '
-             'files matching "-tmp" are excluded. This option may be used '
-             'more than once.')
+                               help='Exclude files matching this regular expression from upload.'
+                                    'WARNING: If neither exclude nor include are defined, then all '
+                                    'files matching "-tmp" are excluded. This option may be used '
+                                    'more than once.')
     include_group.add_argument('-i', '--include', default=None, nargs='+',
-        help='Include only files matching this regular expression into upload.'
-             'WARNING: If neither exclude nor include are defined, then all '
-             'files matching "-tmp" are excluded. This option may be used '
-             'more than once.')
+                               help='Include only files matching this regular expression into upload.'
+                                    'WARNING: If neither exclude nor include are defined, then all '
+                                    'files matching "-tmp" are excluded. This option may be used '
+                                    'more than once.')
     parser.add_argument('--max-upload-size', default=max_file_size,
-        help='Max size for files to be uploaded before doing multipart '
-             '(default %dM)' % max_file_size)
+                        help='Max size for files to be uploaded before doing multipart '
+                             '(default %dM)' % max_file_size)
     parser.add_argument('--multipart-chunk-size', default=default_chunk_size,
-        help='Chunk size for multipart uploads (default: %dM or 10%%%% of '
-             'free memory if default is not available)' % default_chunk_size)
+                        help='Chunk size for multipart uploads (default: %dM or 10%%%% of '
+                             'free memory if default is not available)' % default_chunk_size)
     parser.add_argument('--retries', default=0, type=int,
-        help='If a file upload fails, retry N times before throwing an'
-             'exception, backing off linearly between each retry (default: no retrying)')
+                        help='If a file upload fails, retry N times before throwing an'
+                             'exception, backing off linearly between each retry (default: no retrying)')
     args = parser.parse_args()
 
     # For backwards-compatibility: If neither exclude nor include are set,
@@ -543,11 +547,11 @@ def main():
 
     if args.aws_token:
         boto3.client('s3', aws_access_key_id=args.aws_key,
-                           aws_secret_access_key=args.aws_secret,
-                           security_token=args.aws_token)
+                     aws_secret_access_key=args.aws_secret,
+                     security_token=args.aws_token)
     else:
         boto3.client('s3', aws_access_key_id=args.aws_key,
-                           aws_secret_access_key=args.aws_secret)
+                     aws_secret_access_key=args.aws_secret)
 
     handler = UploadHandler(threads=args.threads, key=args.aws_key,
                             secret=args.aws_secret, token=args.aws_token,
@@ -574,7 +578,7 @@ def main():
                            auto_add=args.auto_add)
         if ret[path] == -1:
             default_log.critical('add_watch failed for %s, bailing out!' %
-                                (path))
+                                 (path))
             return 1
 
     if args.backup:
