@@ -69,18 +69,18 @@ def get_s3(region, key, secret, token):
 #   unsure if boto is thread-safe, will reconnect every time
     log.debug('Connecting to s3')
     if token:
-        s3 = boto3.client('s3', region_name='ap-southeast-2',
+        s3 = boto3.client('s3', region_name=region,
                             aws_access_key_id=key,
                             aws_secret_access_key=secret,
                             security_token=token)
     else:
-        s3 = boto3.client('s3', region_name='ap-southeast-2',
+        s3 = boto3.client('s3', region_name=region,
                           aws_access_key_id=key,
                           aws_secret_access_key=secret)
     return s3
 
 
-def get_matching_s3_keys(s3, bucket, prefix='', suffix=''):
+def get_matching_s3_keys(s3, bucket, timestamp, prefix='', suffix=''):
     kwargs = {'Bucket': bucket, 'Prefix': prefix}
 
     while True:
@@ -90,7 +90,7 @@ def get_matching_s3_keys(s3, bucket, prefix='', suffix=''):
         resp = s3.list_objects_v2(**kwargs)
         for key in resp['Contents']:
             keyname = key['Key']
-            if keyname.startswith(prefix) and keyname.endswith(suffix):
+            if keyname.startswith(prefix) and keyname.endswith(suffix) and key['LastModified'] < timestamp:
                 yield key
 
         # The S3 API is paginated, returning up to 1000 keys at a time.
@@ -101,8 +101,7 @@ def get_matching_s3_keys(s3, bucket, prefix='', suffix=''):
         except KeyError:
             break
 
-
-def find_latest_listdirjson_for_every_table(s3, bucket, prefix):
+def find_listdirjson_for_every_table(s3, bucket, timestamp, prefix):
     latest_listdirjsons={}
     # Get all ks folders, e.g /var/lib/cassandra/<ks>
     keyspace_dirs = [_['Prefix'] for _ in s3.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter='/')['CommonPrefixes']]
@@ -113,8 +112,8 @@ def find_latest_listdirjson_for_every_table(s3, bucket, prefix):
 
         for table_dir in table_dirs:
             # Get all listdir.json files for every tbl folder,
-            # e.g /var/lib/cassandra/<ks>/<tbl>/mc-1/2/3/4...-Data.db-listdir.json
-            keys = [_ for _ in get_matching_s3_keys(s3, bucket, prefix=table_dir, suffix='listdir.json')]
+            # e.g /var/lib/cassandra/<ks>/<tbl>/mc-1/2/3/4...-Data.db-listdir.json that has LastModified older than timestamp
+            keys = [_ for _ in get_matching_s3_keys(s3, bucket, timestamp, prefix=table_dir, suffix='listdir.json')]
 
             if keys:
                 keys.sort(key=lambda l: l['LastModified'])
@@ -122,6 +121,10 @@ def find_latest_listdirjson_for_every_table(s3, bucket, prefix):
                 table = table_dir.replace('{}'.format(prefix), '').rstrip('/')
                 latest_listdirjsons[table] = key
     return latest_listdirjsons
+
+
+def find_latest_listdirjson_for_every_table(s3, bucket, prefix):
+    return find_listdirjson_for_every_table(s3, bucket, datetime.utcnow().replace(tzinfo=utc), prefix=prefix)
 
 
 def build_recursive_fileset(s3, bucket, prefix):
@@ -146,8 +149,6 @@ def build_clog_fileset(s3, bucket, prefix, clog_prefix):
     oldest_key = listdirjsons.pop()
     epoch = datetime.utcfromtimestamp(0).replace(tzinfo=utc)
     oldest_timestamp_ms = int((oldest_key['LastModified'] - epoch).total_seconds()) * 1000
-    # oldest_timestamp = datetime.strptime(oldest_key['LastModified'], "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%s')
-    # oldest_timestamp_ms = int(oldest_timestamp) * 1000
     clogs = [_['Key'] for _ in s3.list_objects_v2(Bucket=bucket, Prefix='%s/' % clog_prefix)['Contents']]
     clogs.sort(reverse=True)
     for clog in clogs:
@@ -423,7 +424,8 @@ def main():
              'If your bucket structure is <fqdn or name>/var/lib/cassandra/commitlog \n'
              'provide /var/lib/cassandra/commitlog. \n')
     ap.add_argument('--date', type=lambda d: datetime.strptime(d, '%Y-%m-%dT%H:%M:%S'),
-                    help='Date to restore to, please specify in YY-MM-DD HH:MM:SS in UTC time.')
+                    help='Date to restore to, please specify in YY-MM-DD HH:MM:SS in UTC time.',
+                    default=datetime.utcnow().replace(tzinfo=utc))
     ap.add_argument('--force', default=False, action='store_true',
         help='Force download files even if they exist')
     ap.add_argument('-n', '--name', default=socket.getfqdn(),
