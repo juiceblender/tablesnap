@@ -143,26 +143,26 @@ def build_clog_fileset(s3, bucket, prefix, clog_prefix):
 
 
 def build_single_fileset(s3, bucket, prefix, origin, target_file):
-    key = None
+    listdirjson = None
     # If you want to restore a fileset in particular
     if target_file:
-        key = s3.get_object(Bucket=bucket, Key='%s/%s-listdir.json' %
+        listdirjson = s3.get_object(Bucket=bucket, Key='%s/%s-listdir.json' %
                              (prefix, target_file))
 
     else:
         prefix_part_count = prefix.count('/') + 1
         keys = [_ for _ in s3.list_objects_v2(Bucket=bucket, Prefix='%s/' %
-                                              (prefix,)) if
-                _.name.endswith('-listdir.json') and _.name.count('/') == prefix_part_count]
+                                              (prefix,))['Contents'] if
+                _['Key'].endswith('-listdir.json') and _['Key'].count('/') == prefix_part_count]
         if keys:
             keys.sort(key=lambda l: l['LastModified'])
             key = keys.pop()
+            listdirjson = s3.get_object(Bucket=bucket, Key=key['Key'])
 
-    if not key:
+    if not listdirjson:
         raise LookupError('Cannot find anything to restore from %s:%s/%s' %
                           (bucket, prefix, target_file or ''))
-
-    json_data = json.loads(key.get_contents_as_string())
+    json_data = json.loads(listdirjson['Body'].read())
     fileset = json_data[origin]
     log.info('Fileset contains %d files to download' % (len(fileset)))
     return fileset
